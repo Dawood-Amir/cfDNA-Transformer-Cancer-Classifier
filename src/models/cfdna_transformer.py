@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from models.fragment_transformer import FragmentTransformer
 from models.region_pooling import RegionPooling
+from models.region_batch_builder import RegionBatchBuilder
 from models.patient_transformer import PatientTransformer
 from models.classification_head import ClassificationHead
 
@@ -24,11 +25,6 @@ class CFDNATransformer(nn.Module):
         super().__init__()
 
 
-
-        ########################################
-        # Fragment level encoder
-        ########################################
-
         self.fragment_encoder = FragmentTransformer(
 
             vocab_size=vocab_size,
@@ -42,18 +38,15 @@ class CFDNATransformer(nn.Module):
         )
 
 
-
-        ########################################
-        # Fragment -> Region
-        ########################################
-
-        self.region_pool = RegionPooling()
+        self.region_pooling = RegionPooling()
 
 
+        self.region_builder = RegionBatchBuilder(
 
-        ########################################
-        # Region -> Patient
-        ########################################
+            embed_dim=embed_dim
+
+        )
+
 
         self.patient_encoder = PatientTransformer(
 
@@ -66,11 +59,6 @@ class CFDNATransformer(nn.Module):
         )
 
 
-
-        ########################################
-        # Classification
-        ########################################
-
         self.classifier = ClassificationHead(
 
             embed_dim=embed_dim,
@@ -81,141 +69,203 @@ class CFDNATransformer(nn.Module):
 
 
 
-    def forward(
+    ####################################################
+    # Create fragment ownership mapping
+    ####################################################
+
+    def build_fragment_mapping(
             self,
-            fragment_embeddings,
-            region_patient_ids,
-            region_ids,
-            batch_size,
-            region_padding_mask
+            fragment_padding_mask
     ):
 
 
-        """
-        fragment_embeddings:
-
-            [N_fragments,128]
-
-        region_patient_ids:
-
-            [N_fragments]
-
-            Which patient owns fragment
+        B,R,F = fragment_padding_mask.shape
 
 
-        region_ids:
+        patient_ids = []
 
-            [N_fragments]
-
-            Which region owns fragment
-
-
-        region_padding_mask:
-
-            [batch,max_regions]
-
-
-        """
+        region_ids = []
 
 
 
-        ########################################
-        # Fragment -> Region
-        ########################################
+        for b in range(B):
+
+            for r in range(R):
 
 
-        region_embeddings, region_mapping = self.region_pool(
-
-            fragment_embeddings,
-
-            region_patient_ids,
-
-            region_ids
-
-        )
+                real_fragments = (
+                    ~fragment_padding_mask[b,r]
+                ).sum().item()
 
 
 
-        ########################################
-        # Create patient region tensor
-        ########################################
+                if real_fragments > 0:
 
 
-        max_regions = region_padding_mask.shape[1]
+                    patient_ids.extend(
+
+                        [b] * real_fragments
+
+                    )
 
 
-        region_batch = torch.zeros(
+                    region_ids.extend(
 
-            batch_size,
+                        [r] * real_fragments
 
-            max_regions,
-
-            fragment_embeddings.size(1),
-
-            device=fragment_embeddings.device
-
-        )
+                    )
 
 
-        patient_region_counter = torch.zeros(
 
-            batch_size,
+        device = fragment_padding_mask.device
+
+
+        patient_ids = torch.tensor(
+
+            patient_ids,
 
             dtype=torch.long,
 
-            device=fragment_embeddings.device
+            device=device
+
+        )
+
+
+        region_ids = torch.tensor(
+
+            region_ids,
+
+            dtype=torch.long,
+
+            device=device
+
+        )
+
+
+        return patient_ids, region_ids
+
+
+
+
+    ####################################################
+    # Forward
+    ####################################################
+
+
+    def forward(
+
+            self,
+
+            input_ids,
+
+            token_padding_mask,
+
+            fragment_padding_mask,
+
+            region_padding_mask,
+
+            show_progress=False
+
+    ):
+
+
+        B = input_ids.size(0)
+
+
+
+        ################################################
+        # Fragment Transformer
+        ################################################
+
+
+        fragment_embeddings = self.fragment_encoder(
+
+            input_ids,
+
+            token_padding_mask,
+
+            fragment_padding_mask,
+
+            chunk_size=256,
+
+            show_progress=show_progress
 
         )
 
 
 
-        for i in range(
-            region_embeddings.size(0)
-        ):
+        ################################################
+        # Create mapping
+        ################################################
 
 
-            patient = region_mapping[i,0]
+        fragment_patient_ids, fragment_region_ids = self.build_fragment_mapping(
 
+            fragment_padding_mask
 
-            position = patient_region_counter[patient]
-
-
-            region_batch[
-
-                patient,
-
-                position
-
-            ] = region_embeddings[i]
-
-
-            patient_region_counter[patient] += 1
+        )
 
 
 
-        ########################################
+        ################################################
+        # Region pooling
+        ################################################
+
+
+        region_embeddings, region_mapping = self.region_pooling(
+
+            fragment_embeddings,
+
+            fragment_patient_ids,
+
+            fragment_region_ids
+
+        )
+
+
+
+        ################################################
+        # Region -> Patient batch
+        ################################################
+
+
+        region_batch, region_mask = self.region_builder(
+
+            region_embeddings,
+
+            region_mapping[:,0],
+
+            region_mapping[:,1],
+
+            B
+
+        )
+
+
+
+        ################################################
         # Patient Transformer
-        ########################################
+        ################################################
 
 
-        patient_embedding = self.patient_encoder(
+        patient_embeddings = self.patient_encoder(
 
             region_batch,
 
-            region_padding_mask
+            region_mask
 
         )
 
 
 
-        ########################################
-        # Classifier
-        ########################################
+        ################################################
+        # Classification
+        ################################################
 
 
         logits = self.classifier(
 
-            patient_embedding
+            patient_embeddings
 
         )
 

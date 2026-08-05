@@ -1,3 +1,4 @@
+#not using yet if woorks past the PositionalEncoding from frangment transformer to here .
 import torch 
 import math
 import torch.nn as nn
