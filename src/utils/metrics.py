@@ -1,36 +1,89 @@
+import torch
+import numpy as np
+
 from sklearn.metrics import (
-    confusion_matrix,
+    accuracy_score,
+    f1_score,
     classification_report,
+    confusion_matrix,
     roc_auc_score
 )
 
-from sklearn.preprocessing import label_binarize
 
 
-def compute_metrics(y_true, y_pred, y_probs):
+def calculate_metrics(
+        labels,
+        predictions,
+        probabilities,
+        num_classes=4
+):
 
-    num_classes = len(y_probs[0])
+    labels = np.array(labels)
 
-    y_true_bin = label_binarize(
-        y_true,
-        classes=list(range(num_classes))
+    predictions = np.array(predictions)
+
+
+    results = {}
+
+
+    results["accuracy"] = accuracy_score(
+        labels,
+        predictions
     )
 
-    auc = roc_auc_score(
-        y_true_bin,
-        y_probs,
+
+    results["macro_f1"] = f1_score(
+        labels,
+        predictions,
         average="macro",
-        multi_class="ovr"
+        zero_division=0
     )
 
-    return {
 
-        "confusion_matrix":
-            confusion_matrix(y_true, y_pred),
+    try:
 
-        "classification_report":
-            classification_report(y_true, y_pred),
+        results["roc_auc"] = roc_auc_score(
 
-        "auc":
-            auc
-    }
+            labels,
+
+            probabilities,
+
+            multi_class="ovr"
+
+        )
+
+    except:
+
+        results["roc_auc"] = 0.0
+
+
+
+    print("\n==============================")
+    print("Classification Report")
+    print("==============================")
+
+    print(
+        classification_report(
+            labels,
+            predictions,
+            zero_division=0
+        )
+    )
+
+
+
+    print("==============================")
+    print("Confusion Matrix")
+    print("==============================")
+
+
+    cm = confusion_matrix(
+        labels,
+        predictions
+    )
+
+
+    print(cm)
+
+
+    return results, cm

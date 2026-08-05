@@ -2,6 +2,68 @@ import torch
 import math
 import torch.nn as nn
 
+
+class PositionalEncoding(nn.Module):
+
+    def __init__(
+            self,
+            embed_dim,
+            max_len=2048
+    ):
+
+        super().__init__()
+
+
+        pe = torch.zeros(
+            max_len,
+            embed_dim
+        )
+
+
+        position = torch.arange(
+            0,
+            max_len
+        ).unsqueeze(1)
+
+
+        div_term = torch.exp(
+
+            torch.arange(
+                0,
+                embed_dim,
+                2
+            )
+            *
+            (-math.log(10000.0) / embed_dim)
+
+        )
+
+
+        pe[:,0::2] = torch.sin(
+            position * div_term
+        )
+
+        pe[:,1::2] = torch.cos(
+            position * div_term
+        )
+
+
+        pe = pe.unsqueeze(0)
+
+
+        self.register_buffer(
+            "pe",
+            pe
+        )
+
+
+    def forward(self,x):
+
+        return x + self.pe[:,:x.size(1)]
+
+
+
+'''old
 class PositionalEncoding(nn.Module):
     #max_len its the max length of tokens 1 fragment have TODO compute it first instead of 5000 here
     #  embed_dim is 128 which we created with each of 12 in vocab dictionary 
@@ -55,3 +117,4 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:, :x.size(1)]
 
         return self.dropout(x)
+        '''
