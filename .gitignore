@@ -1,4 +1,7 @@
-src/data/
+# Ignore ONLY the raw and processed data folders (not the scripts)
+src/data/raw/
+src/data/processed/
+# Ignore heavy data file types globally (this covers any data files)
 __pycache__/
 *.pyc
 *.pyo

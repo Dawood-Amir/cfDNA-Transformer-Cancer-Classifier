@@ -1,0 +1,71 @@
+{
+    # ----------------------------
+    # Patient / Sample Information
+    # ----------------------------
+
+    "label": int, # Classification target. 0 = Healthy 1 = GBM (Glioblastoma) 2 = LGG (Low-Grade Glioma) 3 = DMG_H3K27M
+
+    "subtype": str,  Human-readable disease subtype corresponding to the label.
+
+    "patient_id": str, # Unique identifier for the patient/sample.
+
+    "raw_ctdna_fraction": float, # Estimated fraction of circulating tumor DNA (ctDNA) before computational enrichment. Healthy samples are usually close to 0.
+
+    "enriched_ctdna_fraction": float, # Estimated ctDNA fraction after enrichment. Used as metadata/feature, NOT as the classification label.
+
+    "n_fragments": int, # Total number of processed cfDNA fragments represented in this sample. (Not Reads already processed)
+
+    "regions": Dict,  {
+        # Dictionary containing genomic regions. Each region groups fragments that align  to approximately the same genomic location.
+
+        "region_0": {
+
+            "chromosome": int, # Chromosome where this region is located. # Example: # 1, 2, 3, ..., 22, X, Y (dataset may encode numerically)
+
+            "genomic_start": int, # Starting coordinate of this region on the chromosome according to the hg38 reference genome.
+            
+
+            "fragments": arr  [
+                {
+                    "tokens": [
+
+                        "<cfdna>", # Beginning of the cfDNA fragment. 
+                        
+                        "A", "C", "G", "T",
+                        # DNA nucleotide bases.
+
+                        "<m>",
+                        # Methylated CpG site.
+
+                        "<um>",
+                        # Unmethylated CpG site.
+
+                        "</cfdna>"
+                        # End of the cfDNA fragment.
+                    ],
+
+                    "fragment_length": int, # Length of this cfDNA fragment # measured in base pairs (bp).
+                    
+                    
+
+                    "cpg_count": int, # Number of CpG sites contained # within this fragment.
+                    
+                    
+
+                    "strand": str, # DNA strand where the fragment aligns. # "+" = Forward strand  # "-" = Reverse strand
+                 
+                   
+                },
+
+                {
+                    # Next cfDNA fragment mapped
+                    # to the same genomic region.
+                }
+            ]
+        },
+
+        "region_1": {
+            ...
+        }
+    }
+}

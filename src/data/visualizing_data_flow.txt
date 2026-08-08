@@ -1,0 +1,26 @@
+Visualizing the Complete Flow of Data
+
+Raw JSON (has fragments)
+        │
+        ▼
+  Preprocessing Script (THIS FILE)
+        │
+        ├── For each region:
+        │   ├── Merge all fragment tokens into one list
+        │   ├── Tokenize with <cls> and <sep>
+        │   └── Store as flat "tokens" list
+        │
+        ▼
+  .pt Files (flat regions, no fragment hierarchy)
+        │
+        ▼
+  PatientDataset (loads .pt files)
+        │
+        ▼
+  PatientCollate (pads to batch size)
+        │
+        ▼
+  RegionEncoder (processes regions)
+        │
+        ▼
+  RegionTransformer (processes tokens)
