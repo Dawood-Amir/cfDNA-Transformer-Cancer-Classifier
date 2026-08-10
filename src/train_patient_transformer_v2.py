@@ -4,12 +4,13 @@ import json
 import time
 from datetime import datetime
 import numpy as np
+import pandas as pd  # <-- Added for confusion matrix CSV
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split, WeightedRandomSampler
+from torch.utils.data import DataLoader, random_split, WeightedRandomSampler, Subset
 from tqdm import tqdm
 
 from data.patient_dataset import PatientDataset
@@ -26,11 +27,16 @@ from utils.utils import FocalLoss, compute_all_metrics, save_metrics, print_metr
 # ============================================================
 
 class Config:
-    # Paths
+    # === Paths ===
+    # For Colab:
     DATA_DIR = "/content/drive/MyDrive/cfdna-transformer-data/patient_tensors"
-    SAVE_DIR = "/content/drive/MyDrive/cfdna-transformer-data/training_v2"
-    #DATA_DIR = "C:\\Users\\dawoo\\OneDrive\\Desktop\\NN Projects\\cfdna-transformers\\src\\data\\processed\\patient_tensors"
-    #SAVE_DIR = "C:\\Users\\dawoo\\OneDrive\\Desktop\\NN Projects\\cfdna-transformers\\src\\data\\processed\\training_v2"
+    SAVE_DIR = "/content/drive/MyDrive/cfdna-transformer-data/training_v2_3classes"
+    
+    # === For local testing, uncomment these and comment the above ===
+    # PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # DATA_DIR = os.path.join(PROJECT_ROOT, "data", "processed", "patient_tensors")
+    # SAVE_DIR = os.path.join(PROJECT_ROOT, "training_outputs_3classes")
+    
     CHECKPOINT_DIR = f"{SAVE_DIR}/checkpoints"
     METRICS_DIR = f"{SAVE_DIR}/metrics"
     LOGS_DIR = f"{SAVE_DIR}/logs"
@@ -39,36 +45,36 @@ class Config:
     for d in [SAVE_DIR, CHECKPOINT_DIR, METRICS_DIR, LOGS_DIR]:
         os.makedirs(d, exist_ok=True)
     
-    # Training parameters
+    # === Training parameters ===
     BATCH_SIZE = 1
     GRAD_ACCUMULATION = 4
     EPOCHS = 30
     LR = 1e-4
     WEIGHT_DECAY = 0.01
     PATIENCE = 7
-    NUM_CLASSES = 4
     
-    # Class names
-    CLASS_NAMES = ['Healthy', 'GBM', 'LGG', 'DMG_H3K27M']
+    # === UPDATED: 3 Classes only (dropped DMG) ===
+    NUM_CLASSES = 3
+    CLASS_NAMES = ['Healthy', 'GBM', 'LGG']  # DMG removed
     
-    # Known class counts (from your data)
-    CLASS_COUNTS = [511, 374, 427, 160]  # Training set counts
+    # === UPDATED: Class counts for 3 classes ===
+    CLASS_COUNTS = [511, 374, 427]  # Removed DMG (160)
     
-    # Loss function: 'focal' or 'ce' (cross-entropy)
-    LOSS_TYPE = 'focal'  # 'focal' or 'ce'
-    FOCAL_GAMMA = 2.0
+    # === Loss function ===
+    LOSS_TYPE = 'ce'  # Changed from 'focal' to 'ce' for stability
+    FOCAL_GAMMA = 2.0  # Not used with 'ce', but keep for reference
     
-    # Device
+    # === Device ===
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     DEVICE_TYPE = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # Resume training?
-    RESUME_CHECKPOINT = None  # Set to path to resume, or None to start fresh
+    # === Resume training ===
+    RESUME_CHECKPOINT = None
     
     @classmethod
     def print_config(cls):
         print("=" * 70)
-        print("🚀 TRAINING CONFIGURATION")
+        print("🚀 TRAINING CONFIGURATION (3 Classes - DMG Dropped)")
         print("=" * 70)
         for key, value in cls.__dict__.items():
             if not key.startswith('_') and not callable(value):
@@ -77,67 +83,91 @@ class Config:
 
 
 # ============================================================
-# DATA LOADING
+# DATA LOADING (With Filtering for Class 3)
 # ============================================================
 
 def create_data_loaders(config):
-    """Create train and validation data loaders with optional oversampling."""
+    """Create train and validation data loaders with Class 3 (DMG) removed."""
     
     print("\n📂 Loading dataset...")
     tokenizer = CFDNATokenizer()
     dataset = PatientDataset(config.DATA_DIR)
     
-    # Split dataset
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
+    # === NEW: Filter out Class 3 (DMG) ===
+    print("\n🔍 Filtering out Class 3 (DMG) samples...")
+    filtered_indices = []
+    for i in range(len(dataset)):
+        patient = dataset[i]
+        if patient["label"] != 3:  # Keep only classes 0, 1, 2
+            filtered_indices.append(i)
+    
+    # Create a subset dataset with only 3 classes
+    filtered_dataset = Subset(dataset, filtered_indices)
+    
+    print(f"  Original size: {len(dataset)}")
+    print(f"  Filtered size: {len(filtered_dataset)} (removed Class 3 - DMG)")
+    
+    # Check class distribution after filtering
+    filtered_labels = []
+    for i in range(len(filtered_dataset)):
+        patient = filtered_dataset[i]
+        filtered_labels.append(patient["label"])
+    
+    class_counts = np.bincount(filtered_labels, minlength=config.NUM_CLASSES)
+    print(f"  New class distribution: {class_counts}")
+    for i, name in enumerate(config.CLASS_NAMES):
+        print(f"    {name}: {class_counts[i] if i < len(class_counts) else 0}")
+    
+    # Split dataset (using filtered_dataset)
+    train_size = int(0.8 * len(filtered_dataset))
+    val_size = len(filtered_dataset) - train_size
     
     train_dataset, val_dataset = random_split(
-        dataset,
+        filtered_dataset,
         [train_size, val_size],
         generator=torch.Generator().manual_seed(42)
     )
     
-    print(f"  Total patients: {len(dataset)}")
+    print(f"\n  Total patients (filtered): {len(filtered_dataset)}")
     print(f"  Train: {len(train_dataset)}")
     print(f"  Validation: {len(val_dataset)}")
     
     # Collate function
     collate_fn = PatientCollate(tokenizer.vocab["<pad>"])
     
-    # --- Create sampler with oversampling ---
-    print("\n📊 Computing class weights for oversampling...")
+    # --- Create sampler with balanced sampling (NO oversampling) ---
+    print("\n📊 Computing class weights for balanced sampling...")
     
     # Get all labels from training set
     train_labels = []
     for i in train_dataset.indices:
-        patient = dataset[i]
-        # Patient is a dict with 'label' key
+        patient = filtered_dataset[i]
         train_labels.append(patient["label"])
     
-    class_counts = np.bincount(train_labels, minlength=config.NUM_CLASSES)
-    print(f"  Class counts: {class_counts}")
+    class_counts_train = np.bincount(train_labels, minlength=config.NUM_CLASSES)
+    print(f"  Training class counts: {class_counts_train}")
     print(f"  Class names: {config.CLASS_NAMES}")
     
     # Calculate sampling weights (inverse frequency)
     # Higher weight = more likely to be sampled
-    class_weights = 1.0 / torch.tensor(class_counts, dtype=torch.float32)
+    class_weights = 1.0 / torch.tensor(class_counts_train, dtype=torch.float32)
     sample_weights = [class_weights[label].item() for label in train_labels]
     
-    # Create sampler with replacement
+    # Create sampler with replacement (balanced sampling, no oversampling)
     sampler = WeightedRandomSampler(
         weights=sample_weights,
-        num_samples=len(sample_weights),  # Oversample to balance
+        num_samples=len(sample_weights),  # Same size as dataset
         replacement=True
     )
     
     print(f"  Sampling weights: {class_weights.tolist()}")
-    print("  ✅ WeightedRandomSampler created (oversampling enabled)")
+    print("  ✅ WeightedRandomSampler created (balanced sampling enabled)")
     
     # Create data loaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.BATCH_SIZE,
-        sampler=sampler,  # Use sampler instead of shuffle
+        sampler=sampler,
         collate_fn=collate_fn,
         num_workers=0
     )
@@ -166,7 +196,7 @@ def create_model(config, tokenizer):
         num_heads=4,
         fragment_layers=2,
         patient_layers=2,
-        num_classes=config.NUM_CLASSES
+        num_classes=config.NUM_CLASSES  # Now 3
     )
     model.to(config.DEVICE)
     
@@ -247,7 +277,7 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
     
     print(f"\n🔍 Training on: {config.DEVICE_TYPE.upper()}")
     print("=" * 70)
-    print("🚀 STARTING TRAINING")
+    print("🚀 STARTING TRAINING (3 Classes)")
     print("=" * 70)
     
     for epoch in range(config.EPOCHS):
@@ -363,7 +393,7 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
         print(f"  Macro AUC:  {metrics['roc_auc_macro']:.4f}")
         print(f"  Time:       {epoch_time:.2f}s")
         
-        # Per-class recall (most important for rare classes)
+        # Per-class recall
         print("\n  Per-class Recall:")
         for class_name, scores in metrics['per_class'].items():
             print(f"    {class_name}: {scores['recall']:.4f} (support: {scores['support']})")
