@@ -58,8 +58,7 @@ class Config:
     CLASS_NAMES = ['Healthy', 'GBM', 'LGG']  # DMG removed
     
     # === UPDATED: Class counts for 3 classes ===
-    CLASS_COUNTS = [511, 374, 427]  # Removed DMG (160)
-    
+    CLASS_COUNTS = [527, 355, 430]  # Actual training set counts from your logs
     # === Loss function ===
     LOSS_TYPE = 'ce'  # Changed from 'focal' to 'ce' for stability
     FOCAL_GAMMA = 2.0  # Not used with 'ce', but keep for reference
@@ -221,7 +220,8 @@ def create_model(config, tokenizer):
         )
         print(f"\n  Using Focal Loss (gamma={config.FOCAL_GAMMA})")
     else:
-        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        criterion = nn.CrossEntropyLoss()
+        #criterion = nn.CrossEntropyLoss(weight=class_weights)
         print("\n  Using Cross-Entropy Loss with class weights")
     
     print(f"  Class weights: {class_weights.tolist()}")

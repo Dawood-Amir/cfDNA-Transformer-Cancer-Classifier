@@ -1,6 +1,7 @@
 # Ignore ONLY the raw and processed data folders (not the scripts)
 src/data/raw/
 src/data/processed/
+src/keep_mouse_active.py
 # Ignore heavy data file types globally (this covers any data files)
 __pycache__/
 *.pyc
