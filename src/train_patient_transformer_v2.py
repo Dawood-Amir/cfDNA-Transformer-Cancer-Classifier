@@ -85,7 +85,6 @@ class Config:
 # ============================================================
 # DATA LOADING (With Filtering for Class 3)
 # ============================================================
-
 def create_data_loaders(config):
     """Create train and validation data loaders with Class 3 (DMG) removed."""
     
@@ -93,32 +92,30 @@ def create_data_loaders(config):
     tokenizer = CFDNATokenizer()
     dataset = PatientDataset(config.DATA_DIR)
     
-    # === NEW: Filter out Class 3 (DMG) ===
+    # === FAST FILTERING: Use manifest (no tensor loading) ===
     print("\n🔍 Filtering out Class 3 (DMG) samples...")
-    filtered_indices = []
-    for i in range(len(dataset)):
-        patient = dataset[i]
-        if patient["label"] != 3:  # Keep only classes 0, 1, 2
-            filtered_indices.append(i)
     
-    # Create a subset dataset with only 3 classes
-    filtered_dataset = Subset(dataset, filtered_indices)
+    # Get labels directly from the manifest
+    labels = dataset.manifest['label'].values
+    
+    # Find indices where label != 3
+    filtered_indices = [i for i, label in enumerate(labels) if label != 3]
     
     print(f"  Original size: {len(dataset)}")
-    print(f"  Filtered size: {len(filtered_dataset)} (removed Class 3 - DMG)")
+    print(f"  Filtered size: {len(filtered_indices)} (removed Class 3 - DMG)")
     
     # Check class distribution after filtering
-    filtered_labels = []
-    for i in range(len(filtered_dataset)):
-        patient = filtered_dataset[i]
-        filtered_labels.append(patient["label"])
-    
+    filtered_labels = [labels[i] for i in filtered_indices]
     class_counts = np.bincount(filtered_labels, minlength=config.NUM_CLASSES)
     print(f"  New class distribution: {class_counts}")
     for i, name in enumerate(config.CLASS_NAMES):
         print(f"    {name}: {class_counts[i] if i < len(class_counts) else 0}")
     
-    # Split dataset (using filtered_dataset)
+    # Create a subset dataset using the filtered indices
+    from torch.utils.data import Subset
+    filtered_dataset = Subset(dataset, filtered_indices)
+    
+    # Split dataset
     train_size = int(0.8 * len(filtered_dataset))
     val_size = len(filtered_dataset) - train_size
     
@@ -135,12 +132,13 @@ def create_data_loaders(config):
     # Collate function
     collate_fn = PatientCollate(tokenizer.vocab["<pad>"])
     
-    # --- Create sampler with balanced sampling (NO oversampling) ---
+    # --- Create sampler with balanced sampling ---
     print("\n📊 Computing class weights for balanced sampling...")
     
     # Get all labels from training set
     train_labels = []
     for i in train_dataset.indices:
+        # Get label from the filtered dataset
         patient = filtered_dataset[i]
         train_labels.append(patient["label"])
     
@@ -149,14 +147,13 @@ def create_data_loaders(config):
     print(f"  Class names: {config.CLASS_NAMES}")
     
     # Calculate sampling weights (inverse frequency)
-    # Higher weight = more likely to be sampled
     class_weights = 1.0 / torch.tensor(class_counts_train, dtype=torch.float32)
     sample_weights = [class_weights[label].item() for label in train_labels]
     
-    # Create sampler with replacement (balanced sampling, no oversampling)
+    # Create sampler with replacement (balanced sampling)
     sampler = WeightedRandomSampler(
         weights=sample_weights,
-        num_samples=len(sample_weights),  # Same size as dataset
+        num_samples=len(sample_weights),
         replacement=True
     )
     
@@ -181,8 +178,6 @@ def create_data_loaders(config):
     )
     
     return train_loader, val_loader, tokenizer
-
-
 # ============================================================
 # MODEL CREATION
 # ============================================================
