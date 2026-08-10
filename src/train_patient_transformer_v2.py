@@ -18,7 +18,7 @@ from models.tokenizer import CFDNATokenizer
 from models.cfdna_transformer import CFDNATransformer
 
 # Import the utils you created
-from utils import FocalLoss, compute_all_metrics, save_metrics, print_metrics
+from utils.utils import FocalLoss, compute_all_metrics, save_metrics, print_metrics
 
 
 # ============================================================
@@ -29,6 +29,8 @@ class Config:
     # Paths
     DATA_DIR = "/content/drive/MyDrive/cfdna-transformer-data/patient_tensors"
     SAVE_DIR = "/content/drive/MyDrive/cfdna-transformer-data/training_v2"
+    #DATA_DIR = "C:\\Users\\dawoo\\OneDrive\\Desktop\\NN Projects\\cfdna-transformers\\src\\data\\processed\\patient_tensors"
+    #SAVE_DIR = "C:\\Users\\dawoo\\OneDrive\\Desktop\\NN Projects\\cfdna-transformers\\src\\data\\processed\\training_v2"
     CHECKPOINT_DIR = f"{SAVE_DIR}/checkpoints"
     METRICS_DIR = f"{SAVE_DIR}/metrics"
     LOGS_DIR = f"{SAVE_DIR}/logs"
@@ -124,7 +126,7 @@ def create_data_loaders(config):
     # Create sampler with replacement
     sampler = WeightedRandomSampler(
         weights=sample_weights,
-        num_samples=len(sample_weights) * 2,  # Oversample to balance
+        num_samples=len(sample_weights),  # Oversample to balance
         replacement=True
     )
     
