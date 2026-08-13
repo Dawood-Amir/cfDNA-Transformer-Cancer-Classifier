@@ -4,13 +4,13 @@ import json
 import time
 from datetime import datetime
 import numpy as np
-import pandas as pd  # <-- Added for confusion matrix CSV
+import pandas as pd
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split, WeightedRandomSampler, Subset
+from torch.utils.data import DataLoader, random_split, WeightedRandomSampler
 from tqdm import tqdm
 
 from data.patient_dataset import PatientDataset
@@ -18,24 +18,19 @@ from data.patient_collate import PatientCollate
 from models.tokenizer import CFDNATokenizer
 from models.cfdna_transformer import CFDNATransformer
 
-# Import the utils you created
+# Import utils
 from utils.utils import FocalLoss, compute_all_metrics, save_metrics, print_metrics
 
 
 # ============================================================
-# CONFIGURATION
+# CONFIGURATION (Kaggle-Ready)
 # ============================================================
 
 class Config:
-    # === Paths ===
-    # For Colab:
-    DATA_DIR = "/content/drive/MyDrive/cfdna-transformer-data/patient_tensors"
-    SAVE_DIR = "/content/drive/MyDrive/cfdna-transformer-data/training_v2_3classes"
-    
-    # === For local testing, uncomment these and comment the above ===
-    # PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # DATA_DIR = os.path.join(PROJECT_ROOT, "data", "processed", "patient_tensors")
-    # SAVE_DIR = os.path.join(PROJECT_ROOT, "training_outputs_3classes")
+    # === Kaggle Paths ===
+    # Your Kaggle dataset will be available at /kaggle/input/your-dataset-name
+    DATA_DIR = "/kaggle/input/cfdna-patient-tensors/patient_tensors_3classes"
+    SAVE_DIR = "/kaggle/working/training_outputs_3classes"
     
     CHECKPOINT_DIR = f"{SAVE_DIR}/checkpoints"
     METRICS_DIR = f"{SAVE_DIR}/metrics"
@@ -53,15 +48,18 @@ class Config:
     WEIGHT_DECAY = 0.01
     PATIENCE = 7
     
-    # === UPDATED: 3 Classes only (dropped DMG) ===
+    # === 3 Classes (DMG already filtered out) ===
     NUM_CLASSES = 3
-    CLASS_NAMES = ['Healthy', 'GBM', 'LGG']  # DMG removed
+    CLASS_NAMES = ['Healthy', 'GBM', 'LGG']
     
-    # === UPDATED: Class counts for 3 classes ===
-    CLASS_COUNTS = [527, 355, 430]  # Actual training set counts from your logs
+    # === Class counts from your filtered dataset ===
+    # These are the FULL filtered dataset counts (train + val)
+    # From your logs: [656, 450, 534]
+    CLASS_COUNTS = [656, 450, 534]
+    
     # === Loss function ===
-    LOSS_TYPE = 'ce'  # Changed from 'focal' to 'ce' for stability
-    FOCAL_GAMMA = 2.0  # Not used with 'ce', but keep for reference
+    LOSS_TYPE = 'ce'  # Cross-Entropy (stable)
+    FOCAL_GAMMA = 2.0  # Not used with 'ce'
     
     # === Device ===
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -73,7 +71,7 @@ class Config:
     @classmethod
     def print_config(cls):
         print("=" * 70)
-        print("🚀 TRAINING CONFIGURATION (3 Classes - DMG Dropped)")
+        print("🚀 KAGGLE TRAINING CONFIGURATION (3 Classes - No Filtering)")
         print("=" * 70)
         for key, value in cls.__dict__.items():
             if not key.startswith('_') and not callable(value):
@@ -82,50 +80,36 @@ class Config:
 
 
 # ============================================================
-# DATA LOADING (With Filtering for Class 3)
+# DATA LOADING (No filtering needed!)
 # ============================================================
+
 def create_data_loaders(config):
-    """Create train and validation data loaders with Class 3 (DMG) removed."""
+    """Create train and validation data loaders from filtered dataset."""
     
-    print("\n📂 Loading dataset...")
+    print("\n📂 Loading dataset from Kaggle...")
     tokenizer = CFDNATokenizer()
     dataset = PatientDataset(config.DATA_DIR)
     
-    # === FAST FILTERING: Use manifest (no tensor loading) ===
-    print("\n🔍 Filtering out Class 3 (DMG) samples...")
+    print(f"  Total patients: {len(dataset)}")
     
-    # Get labels directly from the manifest
+    # Check class distribution (for verification)
     labels = dataset.manifest['label'].values
-    
-    # Find indices where label != 3
-    filtered_indices = [i for i, label in enumerate(labels) if label != 3]
-    
-    print(f"  Original size: {len(dataset)}")
-    print(f"  Filtered size: {len(filtered_indices)} (removed Class 3 - DMG)")
-    
-    # Check class distribution after filtering
-    filtered_labels = [labels[i] for i in filtered_indices]
-    class_counts = np.bincount(filtered_labels, minlength=config.NUM_CLASSES)
-    print(f"  New class distribution: {class_counts}")
+    class_counts = np.bincount(labels, minlength=config.NUM_CLASSES)
+    print(f"  Class distribution:")
     for i, name in enumerate(config.CLASS_NAMES):
         print(f"    {name}: {class_counts[i] if i < len(class_counts) else 0}")
     
-    # Create a subset dataset using the filtered indices
-    from torch.utils.data import Subset
-    filtered_dataset = Subset(dataset, filtered_indices)
-    
     # Split dataset
-    train_size = int(0.8 * len(filtered_dataset))
-    val_size = len(filtered_dataset) - train_size
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
     
     train_dataset, val_dataset = random_split(
-        filtered_dataset,
+        dataset,
         [train_size, val_size],
         generator=torch.Generator().manual_seed(42)
     )
     
-    print(f"\n  Total patients (filtered): {len(filtered_dataset)}")
-    print(f"  Train: {len(train_dataset)}")
+    print(f"\n  Train: {len(train_dataset)}")
     print(f"  Validation: {len(val_dataset)}")
     
     # Collate function
@@ -137,27 +121,25 @@ def create_data_loaders(config):
     # Get all labels from training set
     train_labels = []
     for i in train_dataset.indices:
-        # Get label from the filtered dataset
-        patient = filtered_dataset[i]
+        patient = dataset[i]
         train_labels.append(patient["label"])
     
     class_counts_train = np.bincount(train_labels, minlength=config.NUM_CLASSES)
     print(f"  Training class counts: {class_counts_train}")
-    print(f"  Class names: {config.CLASS_NAMES}")
     
     # Calculate sampling weights (inverse frequency)
     class_weights = 1.0 / torch.tensor(class_counts_train, dtype=torch.float32)
     sample_weights = [class_weights[label].item() for label in train_labels]
     
-    # Create sampler with replacement (balanced sampling)
+    # Create sampler with balanced sampling
     sampler = WeightedRandomSampler(
         weights=sample_weights,
-        num_samples=len(sample_weights),
+        num_samples=len(sample_weights),  # Same as dataset size
         replacement=True
     )
     
     print(f"  Sampling weights: {class_weights.tolist()}")
-    print("  ✅ WeightedRandomSampler created (balanced sampling enabled)")
+    print("  ✅ WeightedRandomSampler created")
     
     # Create data loaders
     train_loader = DataLoader(
@@ -165,7 +147,7 @@ def create_data_loaders(config):
         batch_size=config.BATCH_SIZE,
         sampler=sampler,
         collate_fn=collate_fn,
-        num_workers=0
+        num_workers=2  # Kaggle supports multiple workers
     )
     
     val_loader = DataLoader(
@@ -173,10 +155,12 @@ def create_data_loaders(config):
         batch_size=config.BATCH_SIZE,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=0
+        num_workers=2
     )
     
     return train_loader, val_loader, tokenizer
+
+
 # ============================================================
 # MODEL CREATION
 # ============================================================
@@ -190,7 +174,7 @@ def create_model(config, tokenizer):
         num_heads=4,
         fragment_layers=2,
         patient_layers=2,
-        num_classes=config.NUM_CLASSES  # Now 3
+        num_classes=config.NUM_CLASSES
     )
     model.to(config.DEVICE)
     
@@ -207,8 +191,7 @@ def create_model(config, tokenizer):
         T_max=config.EPOCHS
     )
     
-    # Loss function
-    # Class weights (balanced)
+    # Loss function with class weights (for imbalance)
     total = sum(config.CLASS_COUNTS)
     class_weights = total / (config.NUM_CLASSES * torch.tensor(config.CLASS_COUNTS, dtype=torch.float32))
     class_weights = class_weights.to(config.DEVICE)
@@ -220,7 +203,6 @@ def create_model(config, tokenizer):
         )
         print(f"\n  Using Focal Loss (gamma={config.FOCAL_GAMMA})")
     else:
-        #criterion = nn.CrossEntropyLoss()
         criterion = nn.CrossEntropyLoss(weight=class_weights)
         print("\n  Using Cross-Entropy Loss with class weights")
     
@@ -234,9 +216,8 @@ def create_model(config, tokenizer):
 # ============================================================
 
 def train_model(config, train_loader, val_loader, model, optimizer, scheduler, criterion):
-    """Main training loop with full checkpointing and metrics."""
+    """Main training loop with full checkpointing."""
     
-    # Training history
     history = {
         'train_loss': [],
         'val_loss': [],
@@ -263,11 +244,8 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
         }
     }
     
-    # Variables for early stopping
     best_val_loss = float('inf')
     patience_counter = 0
-    
-    # AMP Scaler
     scaler = torch.amp.GradScaler(config.DEVICE_TYPE)
     
     print(f"\n🔍 Training on: {config.DEVICE_TYPE.upper()}")
@@ -282,7 +260,7 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
         print(f"EPOCH {epoch+1}/{config.EPOCHS}")
         print("=" * 70)
         
-        # --- Training Phase ---
+        # Training
         model.train()
         train_loss = 0
         optimizer.zero_grad()
@@ -290,14 +268,12 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
         progress = tqdm(enumerate(train_loader), total=len(train_loader))
         
         for step, batch in progress:
-            # Move to device
             input_ids = batch["input_ids"].to(config.DEVICE)
             token_mask = batch["token_padding_mask"].to(config.DEVICE)
             fragment_mask = batch["fragment_padding_mask"].to(config.DEVICE)
             region_mask = batch["region_padding_mask"].to(config.DEVICE)
             labels = batch["labels"].to(config.DEVICE)
             
-            # Forward pass with AMP
             if config.DEVICE_TYPE == 'cuda':
                 with torch.amp.autocast('cuda'):
                     logits = model(input_ids, token_mask, fragment_mask, region_mask)
@@ -308,10 +284,8 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
                 loss = criterion(logits, labels)
                 loss = loss / config.GRAD_ACCUMULATION
             
-            # Backward pass
             scaler.scale(loss).backward()
             
-            # Gradient accumulation
             if (step + 1) % config.GRAD_ACCUMULATION == 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -322,12 +296,11 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
             train_loss += loss.item() * config.GRAD_ACCUMULATION
             progress.set_description(f"loss={loss.item() * config.GRAD_ACCUMULATION:.4f}")
             
-            # Free memory
             del input_ids, token_mask, fragment_mask, region_mask, labels, logits, loss
         
         train_loss /= len(train_loader)
         
-        # --- Validation Phase ---
+        # Validation
         model.eval()
         val_loss = 0
         all_preds = []
@@ -352,7 +325,6 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
                 
                 val_loss += loss.item()
                 
-                # Get predictions
                 probs = torch.softmax(logits, dim=1)
                 preds = torch.argmax(probs, dim=1)
                 
@@ -364,7 +336,7 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
         
         val_loss /= len(val_loader)
         
-        # --- Compute metrics ---
+        # Metrics
         all_preds = np.array(all_preds)
         all_probs = np.array(all_probs)
         all_targets = np.array(all_targets)
@@ -376,7 +348,6 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
             class_names=config.CLASS_NAMES
         )
         
-        # --- Logging ---
         epoch_time = time.time() - epoch_start_time
         
         print(f"\n📊 Epoch {epoch+1} Results:")
@@ -388,12 +359,11 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
         print(f"  Macro AUC:  {metrics['roc_auc_macro']:.4f}")
         print(f"  Time:       {epoch_time:.2f}s")
         
-        # Per-class recall
         print("\n  Per-class Recall:")
         for class_name, scores in metrics['per_class'].items():
             print(f"    {class_name}: {scores['recall']:.4f} (support: {scores['support']})")
         
-        # --- Save history ---
+        # Save history
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         history['val_accuracy'].append(metrics['accuracy'])
@@ -402,7 +372,7 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
         history['val_weighted_f1'].append(metrics['weighted_f1'])
         history['val_roc_auc_macro'].append(metrics['roc_auc_macro'])
         
-        # --- Save latest checkpoint ---
+        # Save checkpoint
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
@@ -419,7 +389,7 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
         
         torch.save(checkpoint, f"{config.CHECKPOINT_DIR}/checkpoint_epoch_{epoch+1}.pth")
         
-        # --- Save best model ---
+        # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
@@ -427,11 +397,8 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
             history['best_val_loss'] = val_loss
             history['best_val_accuracy'] = metrics['accuracy']
             
-            # Save best checkpoint
             checkpoint['is_best'] = True
             torch.save(checkpoint, f"{config.CHECKPOINT_DIR}/best_model.pth")
-            
-            # Save best metrics
             save_metrics(metrics, f"{config.METRICS_DIR}/best_metrics.json")
             
             print(f"\n  ✅ NEW BEST MODEL! (Loss: {val_loss:.4f}, Acc: {metrics['accuracy']:.4f})")
@@ -439,24 +406,19 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
             patience_counter += 1
             print(f"\n  ⏳ Early stopping counter: {patience_counter}/{config.PATIENCE}")
         
-        # --- Early stopping ---
         if patience_counter >= config.PATIENCE:
             print("\n🛑 Early stopping triggered!")
             break
         
-        # --- Scheduler step ---
         scheduler.step()
-        
-        # --- Cleanup ---
         torch.cuda.empty_cache()
         gc.collect()
         
-        # --- Save history periodically ---
         history['end_time'] = datetime.now().isoformat()
         with open(f"{config.LOGS_DIR}/training_history.json", 'w') as f:
             json.dump(history, f, indent=2)
     
-    # --- Final metrics on best model ---
+    # Final evaluation
     print("\n" + "=" * 70)
     print("🏁 TRAINING COMPLETE!")
     print("=" * 70)
@@ -464,12 +426,10 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
     print(f"Best Val Loss: {history['best_val_loss']:.4f}")
     print(f"Best Val Accuracy: {history['best_val_accuracy']:.4f}")
     
-    # Load best model and compute final metrics
     best_checkpoint = torch.load(f"{config.CHECKPOINT_DIR}/best_model.pth", map_location=config.DEVICE)
     model.load_state_dict(best_checkpoint['model_state_dict'])
     model.eval()
     
-    # Run final validation with best model
     all_preds = []
     all_probs = []
     all_targets = []
@@ -497,13 +457,9 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
         class_names=config.CLASS_NAMES
     )
     
-    # Print final metrics
     print_metrics(final_metrics)
-    
-    # Save final metrics
     save_metrics(final_metrics, f"{config.METRICS_DIR}/final_metrics.json")
     
-    # Save confusion matrix as CSV
     cm_df = pd.DataFrame(
         final_metrics['confusion_matrix'],
         index=config.CLASS_NAMES,
@@ -517,21 +473,16 @@ def train_model(config, train_loader, val_loader, model, optimizer, scheduler, c
 
 
 # ============================================================
-# MAIN SCRIPT
+# MAIN
 # ============================================================
 
 def main():
-    # Load config
     config = Config
     config.print_config()
     
-    # Create data loaders
     train_loader, val_loader, tokenizer = create_data_loaders(config)
-    
-    # Create model
     model, optimizer, scheduler, criterion = create_model(config, tokenizer)
     
-    # Train
     model, history, final_metrics = train_model(
         config, train_loader, val_loader, 
         model, optimizer, scheduler, criterion

@@ -69,7 +69,7 @@ class FragmentTransformer(nn.Module):
 
             num_layers=2,
 
-            dropout=0.1
+            dropout=0.15
 
     ):
 

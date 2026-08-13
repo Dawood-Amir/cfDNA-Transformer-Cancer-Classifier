@@ -82,7 +82,8 @@ class PatientTransformer(nn.Module):
             embed_dim=128,
             num_heads=4,
             num_layers=2,
-            dropout=0.1
+            dropout=0.15
+            
     ):
 
         super().__init__()
