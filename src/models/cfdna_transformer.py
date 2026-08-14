@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from models.fragment_transformer import FragmentTransformer
-from models.region_pooling import RegionPooling
+from models.region_pooling import RegionPooling, RegionAttentionPooling
 from models.region_batch_builder import RegionBatchBuilder
 from models.patient_transformer import PatientTransformer
 from models.classification_head import ClassificationHead
@@ -19,51 +19,57 @@ class CFDNATransformer(nn.Module):
             num_heads=4,
             fragment_layers=2,
             patient_layers=2,
-            num_classes=4
+            num_classes=4,
+            dropout=0.15,           # <-- NEW
+            fragment_dropout=None,  # <-- NEW (optional override)
+            patient_dropout=None ,   # <-- NEW (optional override)
+            pooling_type='mean',  # <-- NEW: 'mean' or 'attention'
+            classifier_dropout=0.2  # <-- NEW: classifier dropout
     ):
 
         super().__init__()
+        
+        if fragment_dropout is None:
+            fragment_dropout = dropout
+        if patient_dropout is None:
+            patient_dropout = dropout
 
 
         self.fragment_encoder = FragmentTransformer(
-
             vocab_size=vocab_size,
-
             embed_dim=embed_dim,
-
             num_heads=num_heads,
-
-            num_layers=fragment_layers
-
+            num_layers=fragment_layers,
+            dropout=fragment_dropout 
         )
 
-
-        self.region_pooling = RegionPooling()
-
+        #selection pooling 
+        if pooling_type == 'attention':
+            self.region_pooling = RegionAttentionPooling(
+                embed_dim=embed_dim
+            )
+            print(f"✅ Using RegionAttentionPooling (embed_dim={embed_dim})")
+        else:
+            self.region_pooling = RegionPooling()
+            print(f"✅ Using RegionPooling (mean pooling)")
 
         self.region_builder = RegionBatchBuilder(
-
             embed_dim=embed_dim
-
         )
-
+        
 
         self.patient_encoder = PatientTransformer(
-
             embed_dim=embed_dim,
-
             num_heads=num_heads,
-
-            num_layers=patient_layers
-
+            num_layers=patient_layers,
+            dropout=patient_dropout
         )
 
 
         self.classifier = ClassificationHead(
-
             embed_dim=embed_dim,
-
-            num_classes=num_classes
+            num_classes=num_classes,
+            dropout=classifier_dropout
 
         )
 
