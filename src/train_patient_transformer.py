@@ -1,32 +1,16 @@
 # ============================================================
-# cfDNA HIERARCHICAL TRANSFORMER - VERSION 6
-# ATTENTION POOLING + SMALLER MODEL + FOCAL LOSS
+# cfDNA HIERARCHICAL TRANSFORMER - VERSION 4 (Final KAggle RUN)
 # ============================================================
 #
-# VERSION 6 CHANGES (vs V5)
-# -------------------------
-# 1. SMALLER MODEL: embed_dim=96, heads=3, layers=1 each
-#    → ~400,000 parameters (down from 811,779)
-#    → Less overfitting, better generalization
+# VERSION 4 CHANGES
+# -----------------
+# 1. HEALTHY_SAMPLING_BOOST: 1.23 → 1.27
 #
-# 2. DROPOUT=0.3 added to all components
-#    → Stronger regularization
+# 2. GBM sampling weight reduced by 5% (class index 1)
+#    This slightly reduces GBM's dominance
 #
-# 3. LOWER LEARNING RATE: 1e-4 → 5e-5
-#    → More stable training, finer adjustments
-#
-# 4. FOCAL LOSS replaces CrossEntropy + Label Smoothing
-#    → Focuses on hard-to-classify examples (GBM)
-#    → Better for imbalanced data
-#
-# 5. ATTENTION POOLING for region aggregation
-#    → Learns which fragments matter within each region
-#    → More expressive than mean pooling
-#
-# 6. Same sampling weights as V5:
-#    → Healthy boost: 1.30
-#    → GBM reduction: 0.90
-#
+# 3. LABEL_SMOOTHING: 0.05 → 0.07
+
 # ============================================================
 
 import os
@@ -44,7 +28,6 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from torch.utils.data import (
     DataLoader,
@@ -63,49 +46,6 @@ from sklearn.metrics import (
 )
 
 # ============================================================
-# FOCAL LOSS
-# ============================================================
-
-class FocalLoss(nn.Module):
-    """
-    Focal Loss for multi-class classification.
-    
-    Focuses on hard-to-classify examples by down-weighting
-    easy examples.
-    
-    Args:
-        alpha: Class weights (tensor of shape [num_classes])
-        gamma: Focusing parameter (default: 2.0)
-        reduction: 'mean', 'sum', or 'none'
-    """
-    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        # Standard cross-entropy (without reduction)
-        ce_loss = F.cross_entropy(
-            inputs, targets, 
-            reduction='none', 
-            weight=self.alpha
-        )
-        
-        # Probability of the correct class
-        pt = torch.exp(-ce_loss)
-        
-        # Focal loss: (1 - pt)^gamma * ce_loss
-        focal_loss = (1 - pt) ** self.gamma * ce_loss
-        
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
-
-# ============================================================
 # REPRODUCIBILITY
 # ============================================================
 
@@ -119,8 +59,8 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
 
 print("=" * 70)
-print("🧬 cfDNA HIERARCHICAL TRANSFORMER - VERSION 6")
-print("🚀 ATTENTION POOLING + SMALLER MODEL + FOCAL LOSS")
+print("🧬 cfDNA HIERARCHICAL TRANSFORMER - VERSION 4 (FINAL)")
+print("🚀 BALANCED TRAINING PIPELINE")
 print("=" * 70)
 
 # ============================================================
@@ -137,32 +77,25 @@ DEVICE_TYPE = (
     else "cpu"
 )
 
-print(f"\n🔍 Device: {DEVICE}")
-print(f"🔍 CUDA available: {torch.cuda.is_available()}")
+print(f"\n Device: {DEVICE}")
+print(f" CUDA available: {torch.cuda.is_available()}")
 
 if torch.cuda.is_available():
 
-    print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
-    print(f"💾 GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+    print(f" GPU: {torch.cuda.get_device_name(0)}")
+    print(f" GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
 
 # ============================================================
 # PATHS
 # ============================================================
 
-#for kaggle paths
-# DATA_DIR = (
-#     "/kaggle/input/datasets/"
-#     "dawoodaamar/cfdna-patient-tensors/"
-#     "patient_tensors_3classes"
-# )
+DATA_DIR = (
+    "/kaggle/input/datasets/"
+    "dawoodaamar/cfdna-patient-tensors/"
+    "patient_tensors_3classes"
+)
 
-# SAVE_DIR = "/kaggle/working/training_outputs_3classes_v6_attention"
-
-# Option 2: Local paths (uncomment for local testing)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(PROJECT_ROOT, "data", "processed", "patient_tensors")
-SAVE_DIR = os.path.join(PROJECT_ROOT, "training_outputs_3classes_v6_attention")
-
+SAVE_DIR = "/kaggle/working/training_outputs_3classes_v4"
 
 CHECKPOINT_DIR = f"{SAVE_DIR}/checkpoints"
 METRICS_DIR = f"{SAVE_DIR}/metrics"
@@ -173,22 +106,19 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(METRICS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-print("\n📁 Output directory:")
+print("\n Output directory:")
 print(SAVE_DIR)
 
 # ============================================================
 # TRAINING CONFIGURATION
 # ============================================================
 
-BATCH_SIZE = 2
+BATCH_SIZE = 1
 GRAD_ACCUMULATION = 4
-EPOCHS = 40
-
-# VERSION 6: Lower learning rate
-LR = 5e-5
-
+EPOCHS = 20
+LR = 1e-4
 WEIGHT_DECAY = 0.01
-PATIENCE = 8
+PATIENCE = 7
 
 NUM_CLASSES = 3
 
@@ -198,39 +128,26 @@ CLASS_NAMES = ["Healthy", "GBM", "LGG"]
 CLASS_COUNTS = [656, 450, 534]
 
 # ------------------------------------------------------------
-# VERSION 6: SMALLER MODEL ARCHITECTURE
+# MODEL ARCHITECTURE
 # ------------------------------------------------------------
 
-EMBED_DIM = 96          # Down from 128
-NUM_HEADS = 3           # Down from 4
-FRAGMENT_LAYERS = 1     # Down from 2
-PATIENT_LAYERS = 1      # Down from 2
+EMBED_DIM = 128
+NUM_HEADS = 4
+FRAGMENT_LAYERS = 2
+PATIENT_LAYERS = 2
 
 # ------------------------------------------------------------
-# VERSION 6: DROPOUT
+# VERSION 4: UPDATED HYPERPARAMETERS
 # ------------------------------------------------------------
 
-DROPOUT = 0.3
-CLASSIFIER_DROPOUT = 0.3
+# 1. Healthy boost: 1.23 → 1.27 (small, safe increase)
+HEALTHY_SAMPLING_BOOST = 1.27
 
-# ------------------------------------------------------------
-# VERSION 6: POOLING TYPE
-# ------------------------------------------------------------
+# 2. Label smoothing: 0.05 → 0.07 (slight increase)
+LABEL_SMOOTHING = 0.07
 
-POOLING_TYPE = 'attention'  # 'attention' or 'mean'
-
-# ------------------------------------------------------------
-# VERSION 6: SAMPLING WEIGHTS (Same as V5)
-# ------------------------------------------------------------
-
-HEALTHY_SAMPLING_BOOST = 1.30
-GBM_WEIGHT_REDUCTION = 0.90
-
-# ------------------------------------------------------------
-# VERSION 6: FOCAL LOSS
-# ------------------------------------------------------------
-
-FOCAL_GAMMA = 2.0
+# 3. GBM weight reduction: 5% (class index 1)
+GBM_WEIGHT_REDUCTION = 0.95
 
 # ============================================================
 # MODEL SELECTION
@@ -243,7 +160,7 @@ BEST_METRIC = "macro_f1"
 # ============================================================
 
 print("\n" + "=" * 70)
-print("⚙️ VERSION 6 CONFIGURATION (Attention Pooling)")
+print("⚙️ VERSION 4 CONFIGURATION")
 print("=" * 70)
 
 print(f"DATA_DIR              : {DATA_DIR}")
@@ -252,28 +169,20 @@ print(f"BATCH_SIZE            : {BATCH_SIZE}")
 print(f"GRAD_ACCUMULATION     : {GRAD_ACCUMULATION}")
 print(f"EFFECTIVE BATCH       : {BATCH_SIZE * GRAD_ACCUMULATION}")
 print(f"EPOCHS                : {EPOCHS}")
-print(f"LEARNING RATE         : {LR} (was 1e-4)")
+print(f"LEARNING RATE         : {LR}")
 print(f"WEIGHT DECAY          : {WEIGHT_DECAY}")
 print(f"PATIENCE              : {PATIENCE}")
 print(f"NUM CLASSES           : {NUM_CLASSES}")
 print(f"BEST METRIC           : {BEST_METRIC}")
+print(f"EMBED DIM             : {EMBED_DIM}")
+print(f"NUM HEADS             : {NUM_HEADS}")
+print(f"FRAGMENT LAYERS       : {FRAGMENT_LAYERS}")
+print(f"PATIENT LAYERS        : {PATIENT_LAYERS}")
 
-print(f"\n🔧 VERSION 6 ARCHITECTURE:")
-print(f"EMBED DIM             : {EMBED_DIM} (was 128)")
-print(f"NUM HEADS             : {NUM_HEADS} (was 4)")
-print(f"FRAGMENT LAYERS       : {FRAGMENT_LAYERS} (was 2)")
-print(f"PATIENT LAYERS        : {PATIENT_LAYERS} (was 2)")
-print(f"DROPOUT               : {DROPOUT}")
-print(f"CLASSIFIER DROPOUT    : {CLASSIFIER_DROPOUT}")
-print(f"POOLING TYPE          : {POOLING_TYPE} (NEW - attention)")
-
-print(f"\n🔧 VERSION 6 LOSS:")
-print(f"LOSS                  : Focal Loss (replaces CrossEntropy)")
-print(f"FOCAL GAMMA           : {FOCAL_GAMMA}")
-
-print(f"\n🔧 VERSION 6 SAMPLING:")
-print(f"HEALTHY SAMPLE BOOST  : {HEALTHY_SAMPLING_BOOST}")
-print(f"GBM WEIGHT REDUCTION  : {GBM_WEIGHT_REDUCTION}")
+print(f"\n🔧 VERSION 4 SPECIFIC:")
+print(f"HEALTHY SAMPLE BOOST  : {HEALTHY_SAMPLING_BOOST} (was 1.23)")
+print(f"LABEL SMOOTHING       : {LABEL_SMOOTHING} (was 0.05)")
+print(f"GBM WEIGHT REDUCTION  : {GBM_WEIGHT_REDUCTION} (5% reduction)")
 
 print("=" * 70)
 
@@ -292,15 +201,13 @@ from data.patient_dataset import PatientDataset
 from data.patient_collate import PatientCollate
 
 from models.tokenizer import CFDNATokenizer
-
-# Import the updated CFDNATransformer with pooling_type support
 from models.cfdna_transformer import CFDNATransformer
 
 # ============================================================
 # LOAD TOKENIZER + DATASET
 # ============================================================
 
-print("\n📂 Loading dataset...")
+print("\n Loading dataset...")
 
 tokenizer = CFDNATokenizer()
 dataset = PatientDataset(DATA_DIR)
@@ -315,7 +222,7 @@ labels = dataset.manifest["label"].values.astype(int)
 
 dataset_counts = np.bincount(labels, minlength=NUM_CLASSES)
 
-print("\n📊 Full dataset distribution:")
+print("\n Full dataset distribution:")
 
 for i, name in enumerate(CLASS_NAMES):
     print(f"  {i} - {name:<10}: {dataset_counts[i]}")
@@ -347,7 +254,7 @@ rng.shuffle(val_indices)
 train_dataset = torch.utils.data.Subset(dataset, train_indices)
 val_dataset = torch.utils.data.Subset(dataset, val_indices)
 
-print("\n📂 Stratified dataset split:")
+print("\n Stratified dataset split:")
 print(f"  Train      : {len(train_dataset)}")
 print(f"  Validation : {len(val_dataset)}")
 
@@ -361,12 +268,12 @@ val_labels = labels[np.asarray(val_indices)]
 train_class_counts = np.bincount(train_labels, minlength=NUM_CLASSES)
 val_class_counts = np.bincount(val_labels, minlength=NUM_CLASSES)
 
-print("\n📊 Training distribution:")
+print("\n Training distribution:")
 
 for i, name in enumerate(CLASS_NAMES):
     print(f"  {i} - {name:<10}: {train_class_counts[i]}")
 
-print("\n📊 Validation distribution:")
+print("\n Validation distribution:")
 
 for i, name in enumerate(CLASS_NAMES):
     print(f"  {i} - {name:<10}: {val_class_counts[i]}")
@@ -386,10 +293,10 @@ class_sampling_weights = 1.0 / torch.tensor(train_class_counts, dtype=torch.floa
 # Boost Healthy
 class_sampling_weights[0] *= HEALTHY_SAMPLING_BOOST
 
-# Reduce GBM (class index 1) by 10%
+# Reduce GBM (class index 1)
 class_sampling_weights[1] *= GBM_WEIGHT_REDUCTION
 
-print("\n⚖️ Sampling weights:")
+print("\n Sampling weights:")
 
 for i, name in enumerate(CLASS_NAMES):
     print(f"  {i} - {name:<10}: {class_sampling_weights[i].item():.6f}")
@@ -406,8 +313,8 @@ sampler = WeightedRandomSampler(
     replacement=True
 )
 
-print("\n⚖️ WeightedRandomSampler enabled")
-print("⚠️ No class weights will be used inside Focal Loss (alpha handles it).")
+print("\n WeightedRandomSampler enabled")
+print(" No class weights will be used inside CrossEntropyLoss.")
 
 # ============================================================
 # DATA LOADERS
@@ -440,20 +347,16 @@ print(f"Validation batches : {len(val_loader)}")
 # ============================================================
 
 print("\n" + "=" * 70)
-print("🧠 CREATING VERSION 6 MODEL (Attention Pooling)")
+print(" CREATING VERSION 4 MODEL")
 print("=" * 70)
 
-# VERSION 6: Smaller model with dropout and attention pooling
 model = CFDNATransformer(
     vocab_size=len(tokenizer.vocab),
     embed_dim=EMBED_DIM,
     num_heads=NUM_HEADS,
     fragment_layers=FRAGMENT_LAYERS,
     patient_layers=PATIENT_LAYERS,
-    num_classes=NUM_CLASSES,
-    dropout=DROPOUT,
-    pooling_type=POOLING_TYPE,          # 'attention' or 'mean'
-    classifier_dropout=CLASSIFIER_DROPOUT
+    num_classes=NUM_CLASSES
 )
 
 model = model.to(DEVICE)
@@ -467,10 +370,9 @@ trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 print(f"\nTotal parameters    : {total_params:,}")
 print(f"Trainable parameters: {trainable_params:,}")
-print(f"📉 Parameter reduction: {100 - (total_params / 811779 * 100):.1f}% smaller than V5")
 
 # ============================================================
-# OPTIMIZER (Lower LR)
+# OPTIMIZER
 # ============================================================
 
 optimizer = torch.optim.AdamW(
@@ -485,29 +387,22 @@ optimizer = torch.optim.AdamW(
 
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
     optimizer,
-    T_max=EPOCHS,
-    eta_min=1e-6
+    T_max=EPOCHS
 )
 
 # ============================================================
-# LOSS - FOCAL LOSS
+# LOSS
 # ============================================================
 
-# Compute class weights for Focal Loss
-total = sum(train_class_counts)
-class_weights = total / (len(train_class_counts) * torch.tensor(train_class_counts, dtype=torch.float32))
-class_weights = class_weights.to(DEVICE)
-
-criterion = FocalLoss(
-    alpha=class_weights,
-    gamma=FOCAL_GAMMA
+criterion = nn.CrossEntropyLoss(
+    label_smoothing=LABEL_SMOOTHING
 )
 
-print("\n🎯 Loss:")
-print(f"  Focal Loss (replaces CrossEntropy)")
-print(f"  Gamma: {FOCAL_GAMMA}")
-print(f"  Class weights: {class_weights.tolist()}")
-print("  Imbalance correction: WeightedRandomSampler + Focal Loss alpha")
+print("\n Loss:")
+print(f"  CrossEntropyLoss")
+print(f"  Label smoothing: {LABEL_SMOOTHING}")
+print("  Class weights: NONE")
+print("  Imbalance correction: WeightedRandomSampler only")
 
 # ============================================================
 # AMP
@@ -515,13 +410,13 @@ print("  Imbalance correction: WeightedRandomSampler + Focal Loss alpha")
 
 if DEVICE_TYPE == "cuda":
     scaler = torch.amp.GradScaler("cuda")
-    print("\n⚡ Mixed Precision: ENABLED")
+    print("\n Mixed Precision: ENABLED")
 else:
     scaler = None
-    print("\n⚠️ Mixed Precision: DISABLED")
+    print("\n Mixed Precision: DISABLED")
 
 # ============================================================
-# METRIC FUNCTION (FIXED AUC)
+# METRIC FUNCTION
 # ============================================================
 
 def calculate_metrics(targets, predictions, probabilities):
@@ -546,7 +441,6 @@ def calculate_metrics(targets, predictions, probabilities):
 
     # --- ROC-AUC (FIXED) ---
     try:
-        # Ensure probabilities sum to 1
         probs = probabilities / probabilities.sum(axis=1, keepdims=True)
 
         metrics["roc_auc_macro"] = float(
@@ -641,7 +535,7 @@ patience_counter = 0
 # ============================================================
 
 print("\n" + "=" * 70)
-print("🚀 STARTING VERSION 6 TRAINING (Attention Pooling)")
+print(" STARTING VERSION 4 TRAINING")
 print("=" * 70)
 
 training_start = time.time()
@@ -774,19 +668,18 @@ for epoch in range(EPOCHS):
     current_lr = optimizer.param_groups[0]["lr"]
 
     print("\n" + "-" * 70)
-    print(f"📉 Train Loss       : {train_loss:.4f}")
-    print(f"📉 Val Loss         : {val_loss:.4f}")
-    print(f"🎯 Accuracy         : {metrics['accuracy']:.4f}")
-    print(f"⚖️ Balanced Accuracy: {metrics['balanced_accuracy']:.4f}")
-    print(f"📊 Macro F1         : {metrics['macro_f1']:.4f}")
-    print(f"📊 Weighted F1      : {metrics['weighted_f1']:.4f}")
+    print(f" Train Loss       : {train_loss:.4f}")
+    print(f" Val Loss         : {val_loss:.4f}")
+    print(f" Accuracy         : {metrics['accuracy']:.4f}")
+    print(f" Balanced Accuracy: {metrics['balanced_accuracy']:.4f}")
+    print(f" Macro F1         : {metrics['macro_f1']:.4f}")
+    print(f" Weighted F1      : {metrics['weighted_f1']:.4f}")
 
-    # AUC reporting (no FAILED messages)
-    print(f"📈 Macro AUC        : {metrics['roc_auc_macro']:.4f}")
-    print(f"📈 Weighted AUC     : {metrics['roc_auc_weighted']:.4f}")
+    print(f" Macro AUC        : {metrics['roc_auc_macro']:.4f}")
+    print(f" Weighted AUC     : {metrics['roc_auc_weighted']:.4f}")
 
-    print(f"⏱️ Epoch time       : {epoch_time:.1f}s")
-    print(f"📚 Learning rate    : {current_lr:.8f}")
+    print(f" Epoch time       : {epoch_time:.1f}s")
+    print(f" Learning rate    : {current_lr:.8f}")
 
     print("\nPer-class recall:")
     for name in CLASS_NAMES:
@@ -851,15 +744,11 @@ for epoch in range(EPOCHS):
             "num_heads": NUM_HEADS,
             "fragment_layers": FRAGMENT_LAYERS,
             "patient_layers": PATIENT_LAYERS,
-            "dropout": DROPOUT,
-            "classifier_dropout": CLASSIFIER_DROPOUT,
-            "pooling_type": POOLING_TYPE,
-            "loss_type": "FocalLoss",
-            "focal_gamma": FOCAL_GAMMA,
+            "label_smoothing": LABEL_SMOOTHING,
             "healthy_sampling_boost": HEALTHY_SAMPLING_BOOST,
             "gbm_weight_reduction": GBM_WEIGHT_REDUCTION,
-            "imbalance_method": "WeightedRandomSampler + Focal Loss alpha",
-            "class_weights": class_weights.tolist()
+            "imbalance_method": "WeightedRandomSampler only",
+            "class_weights": None
         }
 
     }
@@ -899,7 +788,7 @@ for epoch in range(EPOCHS):
         with open(f"{METRICS_DIR}/best_metrics.json", "w") as f:
             json.dump(metrics, f, indent=2)
 
-        print("\n🏆 NEW BEST MODEL!")
+        print("\n NEW BEST MODEL!")
         print(f"   Macro F1: {best_metric_value:.4f}")
         print(f"   Accuracy: {metrics['accuracy']:.4f}")
         print(f"   Balanced Accuracy: {metrics['balanced_accuracy']:.4f}")
@@ -907,7 +796,7 @@ for epoch in range(EPOCHS):
     else:
 
         patience_counter += 1
-        print(f"\n⏳ No improvement: {patience_counter}/{PATIENCE}")
+        print(f"\n No improvement: {patience_counter}/{PATIENCE}")
 
     # ========================================================
     # SAVE TRAINING HISTORY
@@ -922,7 +811,7 @@ for epoch in range(EPOCHS):
 
     config_to_save = {
 
-        "version": "v6_attention",
+        "version": "v4",
         "seed": SEED,
         "data_dir": DATA_DIR,
         "batch_size": BATCH_SIZE,
@@ -943,20 +832,16 @@ for epoch in range(EPOCHS):
             "embed_dim": EMBED_DIM,
             "num_heads": NUM_HEADS,
             "fragment_layers": FRAGMENT_LAYERS,
-            "patient_layers": PATIENT_LAYERS,
-            "dropout": DROPOUT,
-            "classifier_dropout": CLASSIFIER_DROPOUT,
-            "pooling_type": POOLING_TYPE
+            "patient_layers": PATIENT_LAYERS
         },
 
         "loss": {
-            "type": "FocalLoss",
-            "gamma": FOCAL_GAMMA,
-            "class_weights": class_weights.tolist()
+            "label_smoothing": LABEL_SMOOTHING,
+            "class_weights": None
         },
 
         "imbalance": {
-            "method": "WeightedRandomSampler + Focal Loss alpha",
+            "method": "WeightedRandomSampler only",
             "healthy_sampling_boost": HEALTHY_SAMPLING_BOOST,
             "gbm_weight_reduction": GBM_WEIGHT_REDUCTION
         }
@@ -1006,11 +891,11 @@ with open(f"{LOGS_DIR}/training_history.json", "w") as f:
 # ============================================================
 
 print("\n" + "=" * 70)
-print("🏁 TRAINING COMPLETE")
+print(" TRAINING COMPLETE")
 print("=" * 70)
 
-print(f"🏆 Best epoch: {best_epoch}")
-print(f"🏆 Best Macro F1: {best_metric_value:.4f}")
+print(f" Best epoch: {best_epoch}")
+print(f" Best Macro F1: {best_metric_value:.4f}")
 
 best_model_path = f"{CHECKPOINT_DIR}/best_model.pth"
 best_checkpoint = torch.load(best_model_path, map_location=DEVICE, weights_only=False)
@@ -1061,22 +946,22 @@ final_metrics = calculate_metrics(final_targets, final_predictions, final_probab
 # ============================================================
 
 print("\n" + "=" * 70)
-print("📊 FINAL VERSION 6 RESULTS (Attention Pooling)")
+print(" FINAL VERSION 4 RESULTS")
 print("=" * 70)
 
-print(f"\n🎯 Accuracy: {final_metrics['accuracy']:.4f}")
-print(f"⚖️ Balanced Accuracy: {final_metrics['balanced_accuracy']:.4f}")
-print(f"📊 Macro F1: {final_metrics['macro_f1']:.4f}")
-print(f"📊 Weighted F1: {final_metrics['weighted_f1']:.4f}")
-print(f"📈 Macro ROC-AUC: {final_metrics['roc_auc_macro']:.4f}")
-print(f"📈 Weighted ROC-AUC: {final_metrics['roc_auc_weighted']:.4f}")
+print(f"\n Accuracy: {final_metrics['accuracy']:.4f}")
+print(f" Balanced Accuracy: {final_metrics['balanced_accuracy']:.4f}")
+print(f" Macro F1: {final_metrics['macro_f1']:.4f}")
+print(f" Weighted F1: {final_metrics['weighted_f1']:.4f}")
+print(f" Macro ROC-AUC: {final_metrics['roc_auc_macro']:.4f}")
+print(f" Weighted ROC-AUC: {final_metrics['roc_auc_weighted']:.4f}")
 
 # ============================================================
 # PER-CLASS RESULTS
 # ============================================================
 
 print("\n" + "-" * 70)
-print("📋 PER-CLASS RESULTS")
+print(" PER-CLASS RESULTS")
 print("-" * 70)
 
 for name in CLASS_NAMES:
@@ -1156,9 +1041,6 @@ torch.save(
             "num_heads": NUM_HEADS,
             "fragment_layers": FRAGMENT_LAYERS,
             "patient_layers": PATIENT_LAYERS,
-            "dropout": DROPOUT,
-            "classifier_dropout": CLASSIFIER_DROPOUT,
-            "pooling_type": POOLING_TYPE,
             "num_classes": NUM_CLASSES
         },
         "class_names": CLASS_NAMES,
@@ -1183,45 +1065,45 @@ try:
     with open(f"{SAVE_DIR}/tokenizer_vocab.json", "w") as f:
         json.dump(tokenizer_vocab, f, indent=2)
 
-    print("💾 Tokenizer vocabulary saved.")
+    print(" Tokenizer vocabulary saved.")
 
 except Exception as e:
 
-    print(f"⚠️ Could not save tokenizer vocabulary: {e}")
+    print(f" Could not save tokenizer vocabulary: {e}")
 
 # ============================================================
 # CREATE ZIP
 # ============================================================
 
-zip_base = "/kaggle/working/training_outputs_3classes_v6_attention"
+zip_base = "/kaggle/working/training_outputs_3classes_v4"
 zip_path = shutil.make_archive(zip_base, "zip", SAVE_DIR)
 
-print(f"\n📦 ZIP created:\n   {zip_path}")
+print(f"\n ZIP created:\n   {zip_path}")
 
 # ============================================================
 # FINAL SUMMARY
 # ============================================================
 
 print("\n" + "=" * 70)
-print("🎉 EVERYTHING SAVED")
+print(" EVERYTHING SAVED")
 print("=" * 70)
 
-print(f"\n📁 Directory:\n{SAVE_DIR}")
-print(f"\n💾 Best model:\n{best_model_path}")
-print(f"\n💾 Final model:\n{final_model_path}")
-print(f"\n📦 ZIP:\n{zip_path}")
+print(f"\n Directory:\n{SAVE_DIR}")
+print(f"\n Best model:\n{best_model_path}")
+print(f"\n Final model:\n{final_model_path}")
+print(f"\n ZIP:\n{zip_path}")
 
-print("\n📊 FINAL PERFORMANCE")
+print("\n FINAL PERFORMANCE")
 print(f"Accuracy          : {final_metrics['accuracy']:.4f}")
 print(f"Balanced Accuracy : {final_metrics['balanced_accuracy']:.4f}")
 print(f"Macro F1          : {final_metrics['macro_f1']:.4f}")
 print(f"Macro ROC-AUC     : {final_metrics['roc_auc_macro']:.4f}")
 
-print("\n📊 FINAL PREDICTION DISTRIBUTION")
+print("\n FINAL PREDICTION DISTRIBUTION")
 
 for i, name in enumerate(CLASS_NAMES):
     print(f"  {name:<10}: predicted={final_metrics['prediction_distribution'][i]:<4}  actual={val_class_counts[i]:<4}")
 
 print("\n" + "=" * 70)
-print("✅ VERSION 6 RUN COMPLETE (Attention Pooling)")
+print(" VERSION 4 RUN COMPLETE")
 print("=" * 70)
